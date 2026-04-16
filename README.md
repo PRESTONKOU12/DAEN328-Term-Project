@@ -14,4 +14,16 @@ The architecture of the pipeline follows a standard ETL (extract, transform, loa
 
 ## Pipeline structure
 The steps of our pipeline are as follows
-- S
+- Extract: 
+    - Use rest api to extract 6 years of movie data.
+    - Store into individual tables
+    - Combine into 1 large database (no feature cleaning)
+- Transform: 
+    - Clean individual features.
+- Load:
+    - Seperate clean data into db schema (to ensure 3NF) 
+
+## How to run
+```bash
+    docker-compose up --build
+```
