@@ -26,11 +26,10 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-DATA_DIR        = os.environ.get("DATA_DIR", "/app/data")
-INPUT_FILE      = os.path.join(DATA_DIR, "merged_movies.csv")
+DATA_DIR        = os.environ.get("DATA_DIR")
 OUTPUT_FILE     = os.path.join(DATA_DIR, "cleaned_merged_movies_final.csv")
-GEOCODER_AGENT  = os.environ.get("GEOCODER_AGENT", "movies_in_the_park_transform")
-GEOCODER_DELAY  = float(os.environ.get("GEOCODER_DELAY", "1.0"))   # seconds between calls
+GEOCODER_AGENT  = os.environ.get("GEOCODER_AGENT")
+GEOCODER_DELAY  = float(os.environ.get("GEOCODER_DELAY"))   # seconds between calls
 
 FINAL_COLUMNS = [
     "Movie Name",

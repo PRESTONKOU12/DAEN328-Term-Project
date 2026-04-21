@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CONFIGURATION — all values sourced from environment / .env via docker-compose
 # =============================================================================
-DB_HOST     = os.environ.get("DB_HOST", "postgres")   # matches docker-compose service name
-DB_PORT     = os.environ.get("DB_PORT", "5433")
-DB_NAME     = os.environ.get("DB_NAME", "movies_db")
-DB_USER     = os.environ.get("DB_USER", "postgres")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "postgres")
+DB_HOST     = os.environ.get("DB_HOST")   # matches docker-compose service name
+DB_PORT     = os.environ.get("DB_PORT")
+DB_NAME     = os.environ.get("DB_NAME")
+DB_USER     = os.environ.get("DB_USER")
+DB_PASSWORD = os.environ.get("DB_PASSWORD")
 
 # API Endpoints — stored as a JSON string in .env
 # e.g. API_ENDPOINTS={"2014": "https://...", "2015": "https://..."}
@@ -41,7 +41,7 @@ except json.JSONDecodeError:
     logger.error("API_ENDPOINTS env var is not valid JSON — defaulting to empty dict")
     API_ENDPOINTS = {}
 
-API_LIMIT = 50000
+API_LIMIT = 1000
 
 # =============================================================================
 # DATABASE CONNECTION — with retry logic for container startup timing
@@ -388,16 +388,14 @@ def ingest_census_data(conn, df: pd.DataFrame):
     conn.commit()
     logger.info("Table chicago_zip_demographics created")
 
-    data_cols = ["zip_code", "release", "MedianAge", "MedianIncome",
-                 "PredRace", "PctMarried", "BirthRate", "EduRate"]
+    data_cols = ["zip_code", "release", "MedianAge", "MedianIncome", "PredRace", "PctMarried", "BirthRate", "EduRate"]
     rows = [
         tuple(None if pd.isna(row[c]) else row[c] for c in data_cols)
         for _, row in df.iterrows()
     ]
     insert_sql = """
         INSERT INTO chicago_zip_demographics
-            (zip_code, release, "MedianAge", "MedianIncome",
-             "PredRace", "PctMarried", "BirthRate", "EduRate")
+            (zip_code, release, "MedianAge", "MedianIncome", "PredRace", "PctMarried", "BirthRate", "EduRate")
         VALUES %s
     """
     with conn.cursor() as cur:

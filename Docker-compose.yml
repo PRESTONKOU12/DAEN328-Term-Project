@@ -75,48 +75,48 @@ services:
   # ===========================================================================
   # LOAD — reads cleaned CSV, writes final tables into postgres
   # ===========================================================================
-  load:
-    build:
-      context: ./load
-      dockerfile: Dockerfile.load
-    container_name: movies_load
-    env_file:
-      - .env
-    environment:
-      DB_HOST:     postgres
-      DB_PORT:     ${DB_PORT}
-      DB_NAME:     ${DB_NAME}
-      DB_USER:     ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      DATA_DIR:    /app/data
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      transform:
-        condition: service_completed_successfully   # transform must finish first
-
-  # ===========================================================================
-  # STREAMLIT — dashboard, starts after load completes
-  # ===========================================================================
-  streamlit:
-    build:
-      context: ./streamlit
-      dockerfile: Dockerfile.streamlit
-    container_name: movies_streamlit
-    env_file:
-      - .env
-    environment:
-      DB_HOST:     postgres
-      DB_PORT:     ${DB_PORT}
-      DB_NAME:     ${DB_NAME}
-      DB_USER:     ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-    ports:
-      - "8501:8501"
-    depends_on:
-      load:
-        condition: service_completed_successfully
-    restart: unless-stopped             # keep dashboard alive after load exits
+  #load:
+  #  build:
+  #    context: ./load
+  #    dockerfile: Dockerfile.load
+  #  container_name: movies_load
+  #  env_file:
+  #    - .env
+  #  environment:
+  #    DB_HOST:     postgres
+  #    DB_PORT:     ${DB_PORT}
+  #    DB_NAME:     ${DB_NAME}
+  #    DB_USER:     ${DB_USER}
+  #    DB_PASSWORD: ${DB_PASSWORD}
+  #    DATA_DIR:    /app/data
+  #  volumes:
+  #    - ./data:/app/data
+  #  depends_on:
+  #    transform:
+  #      condition: service_completed_successfully   # transform must finish first
+#
+  ## ===========================================================================
+  ## STREAMLIT — dashboard, starts after load completes
+  ## ===========================================================================
+  #streamlit:
+  #  build:
+  #    context: ./streamlit
+  #    dockerfile: Dockerfile.streamlit
+  #  container_name: movies_streamlit
+  #  env_file:
+  #    - .env
+  #  environment:
+  #    DB_HOST:     postgres
+  #    DB_PORT:     ${DB_PORT}
+  #    DB_NAME:     ${DB_NAME}
+  #    DB_USER:     ${DB_USER}
+  #    DB_PASSWORD: ${DB_PASSWORD}
+  #  ports:
+  #    - "8501:8501"
+  #  depends_on:
+  #    load:
+  #      condition: service_completed_successfully
+  #  restart: unless-stopped             # keep dashboard alive after load exits
 
 volumes:
   postgres_data:                        # persists postgres data between runs
