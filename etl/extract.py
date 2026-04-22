@@ -274,7 +274,7 @@ def fetch_census(zip_list: List[str], release: str = "acs2019_5yr") -> pd.DataFr
     logger.info(f"Census fetch complete — {len(df):,} ZIP rows")
     return df
 
-
+''' TODO: REMOVE THIS SECTION, I WANT TO PRESERVE INDIVIDUALITY of MOVIES AND CENSUS DATA. 
 def merge_census(movies_df: pd.DataFrame, census_df: pd.DataFrame) -> pd.DataFrame:
     """
     Left join census demographics onto movie records by zip code.
@@ -304,7 +304,7 @@ def merge_census(movies_df: pd.DataFrame, census_df: pd.DataFrame) -> pd.DataFra
     unmatched = merged["B19013_001E"].isna().sum()
     logger.info(f"Census merge complete — {matched:,} rows matched, {unmatched:,} unmatched")
 
-    return merged
+    return merged'''
 
 # =============================================================================
 # PUBLIC INTERFACE — called by main.py
@@ -328,9 +328,9 @@ def run_extract() -> pd.DataFrame:
 
     movies_df = fetch_all_movies()
     census_df = fetch_census(CHICAGO_ZIPS)
-    raw_df    = merge_census(movies_df, census_df)
+    
+    logger.info(f"Extract movies_df complete — {len(movies_df):,} rows, {len(movies_df.columns)} columns ready for transform")
+    logger.info(f"Extract census_df complete — {len(census_df):,} rows, {len(census_df.columns)} columns ready for transform")
+    logger.info(f"Final columns: {movies_df.columns.tolist()}")
 
-    logger.info(f"Extract complete — {len(raw_df):,} rows, {len(raw_df.columns)} columns ready for transform")
-    logger.info(f"Final columns: {raw_df.columns.tolist()}")
-
-    return raw_df
+    return movies_df, census_df

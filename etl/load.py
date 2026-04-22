@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
 Movies in the Park - Load
-Receives clean DataFrame from transform via main.py.
-Creates a normalised schema and populates all tables.
-Schema:
-    ZipCodes  (zip_code, income)
-        └── Parks (park_id, park_name, address, zip_code)
-                └── Events (event_id, movie_name, park_id, rating, date, closed_captioning)
-This is the only script that writes to postgres.
+Two public interfaces:
+  run_load_csv()      — TEST MODE  — writes DataFrames to CSV
+  run_load_postgres() — PRODUCTION — writes to ZipCodes, Parks, Events tables
 """
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 import logging
+import os
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,8 +17,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DATA_DIR           = os.environ.get("DATA_DIR", "/app/data")
+OUTPUT_FILE        = os.path.join(DATA_DIR, "cleaned_movies_final.csv")
+CENSUS_OUTPUT_FILE = os.path.join(DATA_DIR, "census_data.csv")
+
 # =============================================================================
-# TABLE DEFINITIONS — normalised schema from db_setup.py
+# TABLE DEFINITIONS
 # =============================================================================
 CREATE_ZIPCODES_TABLE = """
     CREATE TABLE IF NOT EXISTS ZipCodes (
@@ -34,8 +35,8 @@ CREATE_PARKS_TABLE = """
     CREATE TABLE IF NOT EXISTS Parks (
         park_id   SERIAL PRIMARY KEY,
         park_name VARCHAR(255) NOT NULL,
-        address   VARCHAR(255) NOT NULL,
-        zip_code  VARCHAR(10)  NOT NULL,
+        address   VARCHAR(255),
+        zip_code  VARCHAR(10) NOT NULL,
         FOREIGN KEY (zip_code) REFERENCES ZipCodes(zip_code)
     );
 """
@@ -56,81 +57,138 @@ CREATE_EVENTS_TABLE = """
 # TABLE CREATION
 # =============================================================================
 def create_tables(conn):
-    """
-    Create all tables in dependency order.
-    ZipCodes must exist before Parks (FK on zip_code).
-    Parks must exist before Events (FK on park_id).
-    Uses IF NOT EXISTS — safe to re-run.
-    """
     logger.info("Creating tables...")
     with conn.cursor() as cur:
         logger.info("  Creating ZipCodes table...")
         cur.execute(CREATE_ZIPCODES_TABLE)
-
         logger.info("  Creating Parks table...")
         cur.execute(CREATE_PARKS_TABLE)
-
         logger.info("  Creating Events table...")
         cur.execute(CREATE_EVENTS_TABLE)
-
     conn.commit()
     logger.info("All tables created successfully")
 
 # =============================================================================
 # LOAD — ZIPCODES
 # =============================================================================
-def load_zipcodes(conn, df: pd.DataFrame):
+def ensure_all_movie_zips(conn, movies_df: pd.DataFrame):
     """
-    Populate ZipCodes from unique zip codes in the clean DataFrame.
-    Income is populated from census data if available in the DataFrame,
-    otherwise defaults to NULL.
-    Skips rows with invalid/missing zip codes.
+    Before loading Parks, check every zip code in the movies DataFrame
+    exists in ZipCodes. Insert any missing ones with NULL income.
+    
+    This handles zip codes that failed the Census API call
+    (e.g. 60627, 60635 return empty responses from ACS 2019).
+    """
+    logger.info("  Ensuring all movie zip codes exist in ZipCodes...")
+
+    # Get zip codes already in ZipCodes table
+    with conn.cursor() as cur:
+        cur.execute("SELECT zip_code FROM ZipCodes;")
+        existing_zips = {row[0] for row in cur.fetchall()}
+
+    # Get all unique zip codes from the movies DataFrame
+    movie_zips = set(
+        str(int(z)).zfill(5)
+        for z in movies_df["Zip"].dropna().unique()
+        if z != 0
+    )
+
+    # Find any that are missing from ZipCodes
+    missing_zips = movie_zips - existing_zips
+
+    if not missing_zips:
+        logger.info("  All movie zip codes already present in ZipCodes")
+        return
+
+    logger.warning(
+        f"  {len(missing_zips)} zip codes in movies not found in ZipCodes "
+        f"(likely failed Census API calls): {sorted(missing_zips)}"
+    )
+
+    with conn.cursor() as cur:
+        for zip_code in sorted(missing_zips):
+            cur.execute(
+                """
+                INSERT INTO ZipCodes (zip_code, income)
+                VALUES (%s, NULL)
+                ON CONFLICT DO NOTHING;
+                """,
+                (zip_code,)
+            )
+    conn.commit()
+    logger.info(f"  Inserted {len(missing_zips)} missing zip codes with NULL income")
+
+
+def ensure_unknown_zip(conn):
+    """
+    Insert a placeholder zip '00000' for parks with no resolvable zip code.
+    Must exist in ZipCodes before Parks can reference it via FK.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO ZipCodes (zip_code, income)
+            VALUES ('00000', NULL)
+            ON CONFLICT DO NOTHING;
+        """)
+    conn.commit()
+    logger.info("  Placeholder zip '00000' ensured in ZipCodes")
+
+
+def load_zipcodes(conn, census_df: pd.DataFrame):
+    """
+    Populate ZipCodes from census DataFrame.
+    Groups by zip_code, averages median household income.
+
+    Bug fix: B19013_001E comes back as strings from the Census API —
+    must cast to numeric before calling .mean()
     """
     logger.info("Loading ZipCodes table...")
 
-    # Extract unique zip codes — filter out 0 and invalid entries
-    unique_zips = (
-        df[["Zip"]]
-        .drop_duplicates()
-        .dropna()
-    )
-    unique_zips = unique_zips[unique_zips["Zip"] != 0]
+    # FIX 1 — cast to numeric before aggregation
+    census_df = census_df.copy()
+    census_df["B19013_001E"] = pd.to_numeric(census_df["B19013_001E"], errors="coerce")
 
-    # Pull income from DataFrame if the census merge added it, else NULL
-    income_col_present = "MedianIncome" in df.columns
+    unique_zips = census_df.groupby("zip_code", as_index=False).agg(
+        avg_median_income=("B19013_001E", "mean")
+    )
 
     rows = []
     for _, row in unique_zips.iterrows():
-        zip_code = str(int(row["Zip"])).zfill(5)   # ensure 5-digit string e.g. "60601"
-        income   = int(row["MedianIncome"]) if (
-            income_col_present and not pd.isna(row.get("MedianIncome"))
-        ) else None
+        zip_code = str(row["zip_code"]).strip()
+        income   = (
+            int(row["avg_median_income"])
+            if pd.notna(row["avg_median_income"])
+            else None
+        )
         rows.append((zip_code, income))
 
-    insert_sql = """
-        INSERT INTO ZipCodes (zip_code, income)
-        VALUES %s
-        ON CONFLICT (zip_code) DO NOTHING;
-    """
     with conn.cursor() as cur:
-        execute_values(cur, insert_sql, rows, page_size=500)
-    conn.commit()
+        for zip_code, income in rows:
+            # FIX 2 — pass values tuple to execute
+            cur.execute(
+                """
+                INSERT INTO ZipCodes (zip_code, income)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING;
+                """,
+                (zip_code, income)   # ← was missing
+            )
 
+    conn.commit()
     logger.info(f"  {len(rows):,} zip codes loaded into ZipCodes")
-    return rows
 
 # =============================================================================
 # LOAD — PARKS
 # =============================================================================
-def load_parks(conn, df: pd.DataFrame) -> dict:
+def load_parks(conn, movies_df: pd.DataFrame) -> dict:
     """
-    Populate Parks from unique park names in the clean DataFrame.
+    Populate Parks from unique park names in the clean movies DataFrame.
     Returns a dict mapping park_name → park_id for use when loading Events.
     """
     logger.info("Loading Parks table...")
 
     unique_parks = (
-        df[["Park Name", "Address", "Zip"]]
+        movies_df[["Park Name", "Address", "Zip"]]
         .drop_duplicates(subset=["Park Name"])
         .dropna(subset=["Park Name"])
     )
@@ -138,18 +196,15 @@ def load_parks(conn, df: pd.DataFrame) -> dict:
     rows = []
     for _, row in unique_parks.iterrows():
         park_name = str(row["Park Name"]).strip()
-        address   = str(row["Address"]).strip() if pd.notna(row["Address"]) else "Address Unknown"
-        zip_code  = str(int(row["Zip"])).zfill(5) if row["Zip"] != 0 else "00000"
+        address   = (
+            str(row["Address"]).strip()
+            if pd.notna(row["Address"])
+            else "Address Unknown"
+        )
+        # FIX 3 — use "00000" placeholder which is guaranteed to exist in ZipCodes
+        zip_code  = str(int(row["Zip"])).zfill(5) if (pd.notna(row["Zip"]) and row["Zip"] != 0) else "00000"
         rows.append((park_name, address, zip_code))
 
-    insert_sql = """
-        INSERT INTO Parks (park_name, address, zip_code)
-        VALUES %s
-        ON CONFLICT DO NOTHING
-        RETURNING park_id, park_name;
-    """
-
-    # execute_values does not support RETURNING — insert row by row to capture park_ids
     park_name_to_id = {}
     with conn.cursor() as cur:
         for park_name, address, zip_code in rows:
@@ -166,7 +221,7 @@ def load_parks(conn, df: pd.DataFrame) -> dict:
             if result:
                 park_name_to_id[result[1]] = result[0]
 
-        # Fetch any parks that already existed (ON CONFLICT DO NOTHING skips RETURNING)
+        # Catch any parks that already existed — ON CONFLICT skips RETURNING
         cur.execute("SELECT park_id, park_name FROM Parks;")
         for park_id, park_name in cur.fetchall():
             park_name_to_id[park_name] = park_id
@@ -178,17 +233,17 @@ def load_parks(conn, df: pd.DataFrame) -> dict:
 # =============================================================================
 # LOAD — EVENTS
 # =============================================================================
-def load_events(conn, df: pd.DataFrame, park_name_to_id: dict):
+def load_events(conn, movies_df: pd.DataFrame, park_name_to_id: dict):
     """
     Populate Events using park_id foreign keys resolved from park_name_to_id.
     Skips rows where park_id cannot be resolved.
     """
-    logger.info(f"Loading Events table from {len(df):,} clean rows...")
+    logger.info(f"Loading Events table from {len(movies_df):,} clean rows...")
 
     rows    = []
     skipped = 0
 
-    for _, row in df.iterrows():
+    for _, row in movies_df.iterrows():
         park_name = str(row["Park Name"]).strip() if pd.notna(row["Park Name"]) else None
         park_id   = park_name_to_id.get(park_name)
 
@@ -197,11 +252,10 @@ def load_events(conn, df: pd.DataFrame, park_name_to_id: dict):
             skipped += 1
             continue
 
-        movie_name = str(row["Movie Name"]).strip()
-        rating     = str(row["Rating"]).strip()  if pd.notna(row["Rating"])  else "NR"
-        date       = row["Date"] if pd.notna(row["Date"]) else None
+        movie_name        = str(row["Movie Name"]).strip()
+        rating            = str(row["Rating"]).strip() if pd.notna(row["Rating"]) else "NR"
+        date              = row["Date"] if pd.notna(row["Date"]) else None
 
-        # Normalise closed captioning to boolean
         cc_raw = row["Closed Captioning"]
         if pd.isna(cc_raw):
             closed_captioning = False
@@ -226,7 +280,6 @@ def load_events(conn, df: pd.DataFrame, park_name_to_id: dict):
 # VERIFY
 # =============================================================================
 def verify_load(conn):
-    """Log row counts for all tables as a post-load sanity check."""
     logger.info("Verifying loaded tables...")
     tables = ["ZipCodes", "Parks", "Events"]
     with conn.cursor() as cur:
@@ -240,22 +293,15 @@ def verify_load(conn):
                 conn.rollback()
 
 # =============================================================================
-# PUBLIC INTERFACE — called by main.py
+# PUBLIC INTERFACE — PRODUCTION (postgres)
 # =============================================================================
-def run_load_postgres(conn, clean_df: pd.DataFrame):
+def run_load_postgres(conn, cleaned_movies: pd.DataFrame, census_data: pd.DataFrame):
     """
-    Entry point called by main.py.
-
-    Receives the clean movies DataFrame from run_transform().
-    Creates the normalised schema and bulk inserts all data.
-    Load order respects foreign key constraints:
+    Entry point called by main.py in production mode.
+    Load order respects FK constraints:
         1. ZipCodes  (no dependencies)
         2. Parks     (depends on ZipCodes)
         3. Events    (depends on Parks)
-
-    Args:
-        conn:     Active psycopg2 connection from main.py
-        clean_df: Clean movies DataFrame from run_transform()
     """
     logger.info("=" * 60)
     logger.info("LOAD — writing clean data to postgres")
@@ -263,13 +309,12 @@ def run_load_postgres(conn, clean_df: pd.DataFrame):
 
     try:
         create_tables(conn)
-
-        load_zipcodes(conn, clean_df)
-
-        park_name_to_id = load_parks(conn, clean_df)
-
-        load_events(conn, clean_df, park_name_to_id)
-
+        ensure_unknown_zip(conn)        # FIX 3 — guarantees '00000' exists before Parks load
+        load_zipcodes(conn, census_data)
+        ensure_all_movie_zips(conn, cleaned_movies) # ← NEW: backfill any missing zips
+        
+        park_name_to_id = load_parks(conn, cleaned_movies)
+        load_events(conn, cleaned_movies, park_name_to_id)
         verify_load(conn)
 
         logger.info("=" * 60)
@@ -281,48 +326,35 @@ def run_load_postgres(conn, clean_df: pd.DataFrame):
         conn.rollback()
         raise
 
-#!/usr/bin/env python3
-"""
-Movies in the Park - Load (TEST MODE)
-Receives clean DataFrame from transform via main.py.
-Writes clean DataFrame to CSV in DATA_DIR instead of postgres.
-Swap CMD in main.py to run_load_postgres() when ready for production.
-"""
-import pandas as pd
-import logging
-import os
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-DATA_DIR    = os.environ.get("DATA_DIR", "/app/data")
-OUTPUT_FILE = os.path.join(DATA_DIR, "cleaned_movies_final.csv")
-
 # =============================================================================
-# PUBLIC INTERFACE — called by main.py (TESTING PURPOSES)
+# PUBLIC INTERFACE — TEST MODE (CSV)
 # =============================================================================
-def run_load_csv(clean_df: pd.DataFrame):
+def run_load_csv(cleaned_movies: pd.DataFrame, census_df: pd.DataFrame):
     """
-    TEST MODE — writes clean DataFrame to CSV instead of postgres.
-
-    Args:
-        clean_df: Clean movies DataFrame from run_transform()
+    Test mode — writes DataFrames to CSV files in DATA_DIR.
+    No postgres connection needed.
     """
     logger.info("=" * 60)
-    logger.info("LOAD (TEST MODE) — writing clean DataFrame to CSV")
+    logger.info("LOAD (TEST MODE) — writing DataFrames to CSV")
     logger.info("=" * 60)
 
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
 
-        clean_df.to_csv(OUTPUT_FILE, index=False)
+        logger.info("Writing cleaned movies to CSV...")
+        cleaned_movies.to_csv(OUTPUT_FILE, index=False)
+        logger.info(f"  {len(cleaned_movies):,} rows saved to {OUTPUT_FILE}")
+        logger.info(f"  Columns: {cleaned_movies.columns.tolist()}")
+        logger.info(f"  Sample:\n{cleaned_movies.head()}")
 
-        logger.info(f"CSV written — {len(clean_df):,} rows saved to {OUTPUT_FILE}")
-        logger.info(f"Columns: {clean_df.columns.tolist()}")
-        logger.info(f"Sample:\n{clean_df.head()}")
+        logger.info("-" * 60)
+
+        logger.info("Writing census data to CSV...")
+        census_df.to_csv(CENSUS_OUTPUT_FILE, index=False)
+        logger.info(f"  {len(census_df):,} rows saved to {CENSUS_OUTPUT_FILE}")
+        logger.info(f"  Columns: {census_df.columns.tolist()}")
+        logger.info(f"  Sample:\n{census_df.head()}")
+
         logger.info("=" * 60)
         logger.info("LOAD COMPLETE")
         logger.info("=" * 60)

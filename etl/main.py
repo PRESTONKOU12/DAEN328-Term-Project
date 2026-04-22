@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Movies in the Park — ETL Orchestrator
-Coordinates extract → transform → load as a pure in-memory pipeline.
-Postgres is written to exactly once, at the end of the pipeline.
+Toggle between test mode (CSV) and production mode (postgres)
+by swapping the load call as noted below.
 """
 import logging
 import time
@@ -15,18 +15,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_HOST     = os.environ.get("DB_HOST")
-DB_PORT     = os.environ.get("DB_PORT")
-DB_NAME     = os.environ.get("DB_NAME")
-DB_USER     = os.environ.get("DB_USER")
+DB_HOST     = os.environ.get("DB_HOST", "postgres")
+DB_PORT     = os.environ.get("DB_PORT", "5432")
+DB_NAME     = os.environ.get("DB_NAME", "movies_db")
+DB_USER     = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD = os.environ.get("DB_PASSWORD")
 
 
 def get_connection(retries: int = 10, delay: int = 5):
-    """
-    Establish a single shared postgres connection for the full pipeline.
-    Retries handle the case where the postgres container is still warming up.
-    """
     for attempt in range(1, retries + 1):
         try:
             logger.info(
@@ -65,36 +61,41 @@ def main():
 
         # ------------------------------------------------------------------
         # PHASE 1 — EXTRACT
-        # Calls Chicago Open Data + Census APIs
-        # Returns a single merged raw DataFrame — nothing written to postgres
+        # Returns (movies_df, census_df) as separate DataFrames
         # ------------------------------------------------------------------
         logger.info("PHASE 1 — EXTRACT")
         logger.info("-" * 60)
         from extract import run_extract
-        raw_df = run_extract()
-        logger.info(f"Extract complete — {len(raw_df):,} raw rows returned")
+        movies_df, census_df = run_extract()
+        logger.info(f"Extract complete — {len(movies_df):,} movie rows, {len(census_df):,} census rows")
 
         # ------------------------------------------------------------------
         # PHASE 2 — TRANSFORM
-        # Receives raw merged DataFrame from extract
-        # Returns a clean DataFrame — nothing written to postgres
+        # Receives movies_df, returns clean_movies_df
+        # Census data is not transformed — passed directly to load
         # ------------------------------------------------------------------
         logger.info("PHASE 2 — TRANSFORM")
         logger.info("-" * 60)
         from transform import run_transform
-        clean_df = run_transform(raw_df)
-        logger.info(f"Transform complete — {len(clean_df):,} clean rows returned")
+        clean_movies_df = run_transform(movies_df)
+        logger.info(f"Transform complete — {len(clean_movies_df):,} clean movie rows")
 
         # ------------------------------------------------------------------
         # PHASE 3 — LOAD
-        # Receives clean DataFrame from transform
-        # First and only write to postgres
         # ------------------------------------------------------------------
         logger.info("PHASE 3 — LOAD")
         logger.info("-" * 60)
-        from load import run_load_csv
-        run_load_csv(clean_df) #TODO: Change into postgres once testing is confirmed to work
-        logger.info("Load complete — clean tables written to postgres")
+        from load import run_load_postgres
+        run_load_postgres(conn, clean_movies_df, census_df)
+
+        # ------------------------------------------------------------------
+        # To switch to CSV test mode swap the above two lines for:
+        #
+        #   from load import run_load_csv
+        #   run_load_csv(clean_movies_df, census_df)
+        #
+        # No postgres connection is used in CSV mode
+        # ------------------------------------------------------------------
 
         logger.info("=" * 60)
         logger.info("ETL PIPELINE COMPLETE")
