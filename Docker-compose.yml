@@ -51,7 +51,7 @@ services:
         condition: service_healthy        # waits for postgres healthcheck to pass
 
   # ===========================================================================
-  # STREAMLIT — dashboard, starts after ETL completes
+  # STREAMLIT — dashboard, starts after ETL completes (Uncomment everything below this line when streamlit app is done)
   # ===========================================================================
 #  streamlit:
 #    build:

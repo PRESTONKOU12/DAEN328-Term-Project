@@ -7,7 +7,7 @@ Should any of you want to test what data actually looks like (cleaned movie data
 
 
 ## To Andres:
-Please put streamlit app.py in the streamlit directory.  The Dockerfile is already set up so that it should work with the bash startup command 
+There is an empty app.py file in the streamlit directory for you to develop the app.  When you are done go to the Docker-compose.yml file and uncomment the streamlit section.  The Dockerfile for streamlit is already set up so that it should work with the startup command 
 ```bash
 docker-compose up --build
 ```

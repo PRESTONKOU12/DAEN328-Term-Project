@@ -1,3 +1,5 @@
+#TODO: Ensure this file has no dependencies and delete
+
 import psycopg2
 import os
 from dotenv import load_dotenv
