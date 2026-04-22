@@ -1,8 +1,20 @@
-# REMARK TO OTHER MEMBERS WHEN TESTING CODE (DELETE LATER):
+# Remark to other members when testing code (DELETE LATER):
+At this point the ETL container should run without issues, however I would like a second pair of eyes to ensure that there are no glaring issues that I need to be aware of prior to posting.
+
 In etl/main.py at the bottom of the script on lines 88-89, in its current state there is a function call called run_load_postgres().  
 
 Should any of you want to test what data actually looks like (cleaned movie data & census data) there is instructions to change the function call to run_load_csv() where instead of posting to postgres it will output 2 csv files to the data directory as listed currently.  If you choose to do this <b>PLEASE CHANGE IT BACK BEFORE RECOMMITING TO THE REPO</b> so that when it comes time to perform our demo, our production line runs properly. 
 
+
+## To Andres:
+Please put streamlit app.py in the streamlit directory.  The Dockerfile is already set up so that it should work with the bash startup command 
+```bash
+docker-compose up --build
+```
+please let me know if there is anything you need me to implement prior to our meeting tomorrow. 
+
+
+-- Preston 
 
 # Movies in the chicago parks 
 Authors:
