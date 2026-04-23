@@ -53,25 +53,25 @@ services:
   # ===========================================================================
   # STREAMLIT — dashboard, starts after ETL completes (Uncomment everything below this line when streamlit app is done)
   # ===========================================================================
-#  streamlit:
-#    build:
-#      context: ./streamlit
-#      dockerfile: Dockerfile.streamlit
-#    container_name: movies_streamlit
-#    env_file:
-#      - .env
-#    environment:
-#      DB_HOST:     postgres
-#      DB_PORT:     ${DB_PORT}
-#      DB_NAME:     ${DB_NAME}
-#      DB_USER:     ${DB_USER}
-#      DB_PASSWORD: ${DB_PASSWORD}
-#    ports:
-#      - "8501:8501"
-#    depends_on:
-#      etl:
-#        condition: service_completed_successfully   # ETL must finish before dashboard starts
-#    restart: unless-stopped                         # keep dashboard alive after ETL exits
-#
+  streamlit:
+    build:
+      context: ./streamlit
+      dockerfile: Dockerfile.streamlit
+    container_name: movies_streamlit
+    env_file:
+      - .env
+    environment:
+      DB_HOST:     postgres
+      DB_PORT:     ${DB_PORT}
+      DB_NAME:     ${DB_NAME}
+      DB_USER:     ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "8501:8501"
+    depends_on:
+      etl:
+        condition: service_completed_successfully   # ETL must finish before dashboard starts
+    restart: unless-stopped                         # keep dashboard alive after ETL exits
+
 volumes:
   postgres_data:                                    # persists postgres data between runs

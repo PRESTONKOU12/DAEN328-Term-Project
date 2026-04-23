@@ -21,15 +21,72 @@ DATA_DIR           = os.environ.get("DATA_DIR", "/app/data")
 OUTPUT_FILE        = os.path.join(DATA_DIR, "cleaned_movies_final.csv")
 CENSUS_OUTPUT_FILE = os.path.join(DATA_DIR, "census_data.csv")
 
+CENSUS_ZIP_CANDIDATES = ["Zip", "zip_code"]
+CENSUS_INCOME_CANDIDATES = ["Median Household Income", "B19013_001E"]
+CENSUS_MEDIAN_AGE_CANDIDATES = ["Median Age", "B01002_001E"]
+CENSUS_POPULATION_CANDIDATES = ["Total Population", "B01003_001E"]
+
+CENSUS_WHITE_CANDIDATES = ["White Alone Population", "B02001_002E"]
+CENSUS_BLACK_CANDIDATES = ["Black Alone Population", "B02001_003E"]
+CENSUS_ASIAN_CANDIDATES = ["Asian Alone Population", "B02001_005E"]
+CENSUS_OTHER_CANDIDATES = ["Other Race Alone Population", "B02001_007E"]
+
+CENSUS_MARITAL_TOTAL_CANDIDATES = ["Marital Status Universe", "B12001_001E"]
+CENSUS_MARRIED_MALE_CANDIDATES = ["Married Male Population", "B12001_004E"]
+CENSUS_MARRIED_FEMALE_CANDIDATES = ["Married Female Population", "B12001_013E"]
+
+CENSUS_BIRTH_CANDIDATES = ["Women With Birth Last 12 Months", "B13002_002E"]
+
+CENSUS_EDU_TOTAL_CANDIDATES = ["Education Population Total", "B15003_001E"]
+CENSUS_BACHELORS_CANDIDATES = ["Bachelors Degree Population", "B15003_022E"]
+CENSUS_MASTERS_CANDIDATES = ["Masters Degree Population", "B15003_023E"]
+CENSUS_PROFESSIONAL_CANDIDATES = ["Professional School Degree Population", "B15003_024E"]
+CENSUS_DOCTORATE_CANDIDATES = ["Doctorate Degree Population", "B15003_025E"]
+
 # =============================================================================
 # TABLE DEFINITIONS
 # =============================================================================
 CREATE_ZIPCODES_TABLE = """
     CREATE TABLE IF NOT EXISTS ZipCodes (
         zip_code VARCHAR(10) PRIMARY KEY,
-        income   INTEGER
+        income   INTEGER,
+        predominant_race VARCHAR(20),
+        pct_married NUMERIC(5,2),
+        birth_rate INTEGER,
+        edu_rate NUMERIC(5,2),
+        median_age NUMERIC(6,2),
+        population INTEGER
     );
 """
+
+
+def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    return next((c for c in candidates if c in df.columns), None)
+
+
+def _num_or_zero(value) -> float:
+    n = pd.to_numeric(value, errors="coerce")
+    return float(n) if pd.notna(n) else 0.0
+
+
+def ensure_zipcodes_schema(conn):
+    """
+    Add missing ZipCodes columns for newly derived census metrics.
+    Safe to run repeatedly.
+    """
+    alter_sql = [
+        "ALTER TABLE ZipCodes ADD COLUMN IF NOT EXISTS predominant_race VARCHAR(20);",
+        "ALTER TABLE ZipCodes ADD COLUMN IF NOT EXISTS pct_married NUMERIC(5,2);",
+        "ALTER TABLE ZipCodes ADD COLUMN IF NOT EXISTS birth_rate INTEGER;",
+        "ALTER TABLE ZipCodes ADD COLUMN IF NOT EXISTS edu_rate NUMERIC(5,2);",
+        "ALTER TABLE ZipCodes ADD COLUMN IF NOT EXISTS median_age NUMERIC(6,2);",
+        "ALTER TABLE ZipCodes ADD COLUMN IF NOT EXISTS population INTEGER;",
+    ]
+    with conn.cursor() as cur:
+        for stmt in alter_sql:
+            cur.execute(stmt)
+    conn.commit()
+    logger.info("ZipCodes schema verified/updated for derived census metrics")
 
 CREATE_PARKS_TABLE = """
     CREATE TABLE IF NOT EXISTS Parks (
@@ -137,41 +194,168 @@ def ensure_unknown_zip(conn):
 def load_zipcodes(conn, census_df: pd.DataFrame):
     """
     Populate ZipCodes from census DataFrame.
-    Groups by zip_code, averages median household income.
+    Computes and stores selected derived demographic metrics per zip.
 
-    Bug fix: B19013_001E comes back as strings from the Census API —
-    must cast to numeric before calling .mean()
+    Supports both readable census names and legacy ACS code columns.
     """
     logger.info("Loading ZipCodes table...")
 
-    # FIX 1 — cast to numeric before aggregation
-    census_df = census_df.copy()
-    census_df["B19013_001E"] = pd.to_numeric(census_df["B19013_001E"], errors="coerce")
+    zip_col = _pick_col(census_df, CENSUS_ZIP_CANDIDATES)
+    income_col = _pick_col(census_df, CENSUS_INCOME_CANDIDATES)
+    if not zip_col or not income_col:
+        raise KeyError(
+            "Census DataFrame must include zip and income columns. "
+            f"Found: {census_df.columns.tolist()}"
+        )
 
-    unique_zips = census_df.groupby("zip_code", as_index=False).agg(
-        avg_median_income=("B19013_001E", "mean")
+    median_age_col = _pick_col(census_df, CENSUS_MEDIAN_AGE_CANDIDATES)
+    population_col = _pick_col(census_df, CENSUS_POPULATION_CANDIDATES)
+
+    white_col = _pick_col(census_df, CENSUS_WHITE_CANDIDATES)
+    black_col = _pick_col(census_df, CENSUS_BLACK_CANDIDATES)
+    asian_col = _pick_col(census_df, CENSUS_ASIAN_CANDIDATES)
+    other_col = _pick_col(census_df, CENSUS_OTHER_CANDIDATES)
+
+    marital_total_col = _pick_col(census_df, CENSUS_MARITAL_TOTAL_CANDIDATES)
+    married_male_col = _pick_col(census_df, CENSUS_MARRIED_MALE_CANDIDATES)
+    married_female_col = _pick_col(census_df, CENSUS_MARRIED_FEMALE_CANDIDATES)
+
+    birth_col = _pick_col(census_df, CENSUS_BIRTH_CANDIDATES)
+
+    edu_total_col = _pick_col(census_df, CENSUS_EDU_TOTAL_CANDIDATES)
+    bachelors_col = _pick_col(census_df, CENSUS_BACHELORS_CANDIDATES)
+    masters_col = _pick_col(census_df, CENSUS_MASTERS_CANDIDATES)
+    professional_col = _pick_col(census_df, CENSUS_PROFESSIONAL_CANDIDATES)
+    doctorate_col = _pick_col(census_df, CENSUS_DOCTORATE_CANDIDATES)
+
+    # Cast numeric values before aggregation/derivation.
+    census_df = census_df.copy()
+    census_df[income_col] = pd.to_numeric(census_df[income_col], errors="coerce")
+    if median_age_col:
+        census_df[median_age_col] = pd.to_numeric(census_df[median_age_col], errors="coerce")
+    if population_col:
+        census_df[population_col] = pd.to_numeric(census_df[population_col], errors="coerce")
+
+    for col in [
+        white_col, black_col, asian_col, other_col,
+        marital_total_col, married_male_col, married_female_col,
+        birth_col,
+        edu_total_col, bachelors_col, masters_col, professional_col, doctorate_col,
+    ]:
+        if col:
+            census_df[col] = pd.to_numeric(census_df[col], errors="coerce")
+
+    # Derived metrics.
+    def calc_pred_race(row) -> str:
+        races = {
+            "White": _num_or_zero(row.get(white_col)) if white_col else 0,
+            "Black": _num_or_zero(row.get(black_col)) if black_col else 0,
+            "Asian": _num_or_zero(row.get(asian_col)) if asian_col else 0,
+            "Other": _num_or_zero(row.get(other_col)) if other_col else 0,
+        }
+        return max(races, key=races.get)
+
+    def calc_pct_married(row):
+        total_married_universe = _num_or_zero(row.get(marital_total_col)) if marital_total_col else 0
+        married_count = (
+            (_num_or_zero(row.get(married_male_col)) if married_male_col else 0)
+            + (_num_or_zero(row.get(married_female_col)) if married_female_col else 0)
+        )
+        if total_married_universe <= 0:
+            return None
+        return round((married_count / total_married_universe) * 100, 2)
+
+    def calc_edu_rate(row):
+        edu_total = _num_or_zero(row.get(edu_total_col)) if edu_total_col else 0
+        bach_plus = (
+            (_num_or_zero(row.get(bachelors_col)) if bachelors_col else 0)
+            + (_num_or_zero(row.get(masters_col)) if masters_col else 0)
+            + (_num_or_zero(row.get(professional_col)) if professional_col else 0)
+            + (_num_or_zero(row.get(doctorate_col)) if doctorate_col else 0)
+        )
+        if edu_total <= 0:
+            return None
+        return round((bach_plus / edu_total) * 100, 2)
+
+    census_df["predominant_race"] = census_df.apply(calc_pred_race, axis=1)
+    census_df["pct_married"] = census_df.apply(calc_pct_married, axis=1)
+    census_df["birth_rate"] = (
+        pd.to_numeric(census_df[birth_col], errors="coerce").round().astype("Int64")
+        if birth_col else pd.Series([pd.NA] * len(census_df), index=census_df.index, dtype="Int64")
+    )
+    census_df["edu_rate"] = census_df.apply(calc_edu_rate, axis=1)
+
+    if median_age_col:
+        census_df["median_age"] = pd.to_numeric(census_df[median_age_col], errors="coerce")
+    else:
+        census_df["median_age"] = pd.NA
+
+    if population_col:
+        census_df["population"] = pd.to_numeric(census_df[population_col], errors="coerce").round().astype("Int64")
+    else:
+        census_df["population"] = pd.NA
+
+    unique_zips = census_df.groupby(zip_col, as_index=False).agg(
+        avg_median_income=(income_col, "mean"),
+        predominant_race=("predominant_race", "first"),
+        pct_married=("pct_married", "mean"),
+        birth_rate=("birth_rate", "mean"),
+        edu_rate=("edu_rate", "mean"),
+        median_age=("median_age", "mean"),
+        population=("population", "mean"),
     )
 
     rows = []
     for _, row in unique_zips.iterrows():
-        zip_code = str(row["zip_code"]).strip()
+        zip_code = str(row[zip_col]).strip()
         income   = (
             int(row["avg_median_income"])
             if pd.notna(row["avg_median_income"])
             else None
         )
-        rows.append((zip_code, income))
+        predominant_race = str(row["predominant_race"]).strip() if pd.notna(row["predominant_race"]) else None
+        pct_married = float(round(row["pct_married"], 2)) if pd.notna(row["pct_married"]) else None
+        birth_rate = int(round(row["birth_rate"])) if pd.notna(row["birth_rate"]) else None
+        edu_rate = float(round(row["edu_rate"], 2)) if pd.notna(row["edu_rate"]) else None
+        median_age = float(round(row["median_age"], 2)) if pd.notna(row["median_age"]) else None
+        population = int(round(row["population"])) if pd.notna(row["population"]) else None
+
+        rows.append((
+            zip_code,
+            income,
+            predominant_race,
+            pct_married,
+            birth_rate,
+            edu_rate,
+            median_age,
+            population,
+        ))
 
     with conn.cursor() as cur:
-        for zip_code, income in rows:
-            # FIX 2 — pass values tuple to execute
+        for zip_row in rows:
             cur.execute(
                 """
-                INSERT INTO ZipCodes (zip_code, income)
-                VALUES (%s, %s)
-                ON CONFLICT DO NOTHING;
+                INSERT INTO ZipCodes (
+                    zip_code,
+                    income,
+                    predominant_race,
+                    pct_married,
+                    birth_rate,
+                    edu_rate,
+                    median_age,
+                    population
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (zip_code) DO UPDATE SET
+                    income = EXCLUDED.income,
+                    predominant_race = EXCLUDED.predominant_race,
+                    pct_married = EXCLUDED.pct_married,
+                    birth_rate = EXCLUDED.birth_rate,
+                    edu_rate = EXCLUDED.edu_rate,
+                    median_age = EXCLUDED.median_age,
+                    population = EXCLUDED.population;
                 """,
-                (zip_code, income)   # ← was missing
+                zip_row
             )
 
     conn.commit()
@@ -309,6 +493,7 @@ def run_load_postgres(conn, cleaned_movies: pd.DataFrame, census_data: pd.DataFr
 
     try:
         create_tables(conn)
+        ensure_zipcodes_schema(conn)
         ensure_unknown_zip(conn)        # FIX 3 — guarantees '00000' exists before Parks load
         load_zipcodes(conn, census_data)
         ensure_all_movie_zips(conn, cleaned_movies) # ← NEW: backfill any missing zips

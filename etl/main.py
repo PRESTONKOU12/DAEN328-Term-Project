@@ -91,8 +91,8 @@ def main():
         # ------------------------------------------------------------------
         # To switch to CSV test mode swap the above two lines for:
         #
-        #   from load import run_load_csv
-        #   run_load_csv(clean_movies_df, census_df)
+        # from load import run_load_csv
+        # run_load_csv(clean_movies_df, census_df)
         #
         # No postgres connection is used in CSV mode
         # ------------------------------------------------------------------

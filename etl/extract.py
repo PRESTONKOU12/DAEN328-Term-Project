@@ -118,6 +118,29 @@ YEAR_COLUMN_MAPS: Dict[int, Dict[str, str]] = {
 # These are the only columns we carry forward after normalisation
 MERGED_COLUMNS = ["moviename", "address", "rating", "date", "closedcaptioning", "zip", "park", "source_year"]
 
+CENSUS_COLUMN_RENAME_MAP = {
+    "B01002_001E": "Median Age",
+    "B19013_001E": "Median Household Income",
+    "B02001_002E": "White Alone Population",
+    "B02001_003E": "Black Alone Population",
+    "B02001_005E": "Asian Alone Population",
+    "B02001_007E": "Other Race Alone Population",
+    "B12001_001E": "Marital Status Universe",
+    "B12001_004E": "Married Male Population",
+    "B12001_013E": "Married Female Population",
+    "B13002_002E": "Women With Birth Last 12 Months",
+    "B15003_001E": "Education Population Total",
+    "B15003_022E": "Bachelors Degree Population",
+    "B15003_023E": "Masters Degree Population",
+    "B15003_024E": "Professional School Degree Population",
+    "B15003_025E": "Doctorate Degree Population",
+    "B01003_001E": "Total Population",
+    "state": "State Code",
+    "zip code tabulation area": "Zip Code Tabulation Area",
+    "zip_code": "Zip",
+    "release": "Census Release",
+}
+
 # =============================================================================
 # MOVIES — fetch, normalise, merge
 # =============================================================================
@@ -212,7 +235,7 @@ def fetch_all_movies() -> pd.DataFrame:
 def fetch_census(zip_list: List[str], release: str = "acs2019_5yr") -> pd.DataFrame:
     """
     Fetch ACS demographic data for Chicago ZIP codes from the Census API.
-    Returns a raw DataFrame — no transformation applied.
+    Returns a DataFrame with human-readable census column names.
     """
     match = re.fullmatch(r"acs(\d{4})_5yr", release)
     if not match:
@@ -235,6 +258,7 @@ def fetch_census(zip_list: List[str], release: str = "acs2019_5yr") -> pd.DataFr
         "B15003_023E",  # master's
         "B15003_024E",  # professional school
         "B15003_025E",  # doctorate
+        "B01003_001E"   # Population of Zipcode total
     ]
 
     all_results = []
@@ -271,6 +295,7 @@ def fetch_census(zip_list: List[str], release: str = "acs2019_5yr") -> pd.DataFr
         return pd.DataFrame()
 
     df = pd.DataFrame(all_results)
+    df = df.rename(columns=CENSUS_COLUMN_RENAME_MAP)
     logger.info(f"Census fetch complete — {len(df):,} ZIP rows")
     return df
 
