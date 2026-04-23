@@ -1,21 +1,3 @@
-# Remark to other members when testing code (DELETE LATER):
-At this point the ETL container should run without issues, however I would like a second pair of eyes to ensure that there are no glaring issues that I need to be aware of prior to posting.
-
-In etl/main.py at the bottom of the script on lines 88-89, in its current state there is a function call called run_load_postgres().  
-
-Should any of you want to test what data actually looks like (cleaned movie data & census data) there are instructions to change the function call to run_load_csv() where instead of posting to postgres it will output 2 csv files to the data directory as listed currently.  If you choose to do this <b>PLEASE CHANGE IT BACK BEFORE RECOMMITING TO THE REPO</b> so that when it comes time to perform our demo, our production line runs properly. 
-
-
-## To Andres:
-There is an empty app.py file in the streamlit directory for you to develop the app.  When you are done go to the Docker-compose.yml file and uncomment the streamlit section.  The Dockerfile for streamlit is already set up so that it should work with the startup command 
-```bash
-docker-compose up --build
-```
-please let me know if there is anything you need me to implement prior to our meeting tomorrow. 
-
-
--- Preston 
-
 # Movies in the chicago parks 
 Authors:
 - Diya Dev
@@ -29,165 +11,196 @@ The goal of this project is to develop insights into different movie events with
 
 The architecture of the pipeline follows a standard ETL (extract, transform, load) system.  Ingesting data from the chicago data portals' "Movies in the park: (year)" for years 2014 to 2019.  To develop a more nuanced analysis, we used multiple datasets across multiple years. 
 
-
-## Pipeline structure
-The steps of our pipeline are as follows
-- Extract: 
-    - Use rest api to extract 6 years of movie data.
-    - Store into individual tables
-    - Combine into 1 large database (no feature cleaning)
-- Transform: 
-    - Clean individual features.
-- Load:
-    - Seperate clean data into db schema (to ensure 3NF) 
-
+# Movies in the Park — Data Pipeline
 
 ## Architecture & Data Flow
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════════════════╗
-║                         MOVIES IN THE PARK — DATA PIPELINE                                   ║
+║                    MOVIES IN THE PARK — ETL PIPELINE & DATABASE SCHEMA                       ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
 
- EXTERNAL SOURCES                    [etl container]                         STORAGE
- ═══════════════                     ═══════════════                         ═══════
+ EXTERNAL SOURCES                  [etl container]                        [postgres container]
+ ═══════════════                   ═══════════════                        ════════════════════
 
- ┌─────────────────────┐
- │ Chicago Open Data   │
- │ SODA API            │
- │ 2014 → 2019         │
- └──────────┬──────────┘
-            │ HTTP GET                ┌──────────────────────┐
-            │ JSON                   │                      │
-            ▼                        │     extract.py       │
- ┌─────────────────────┐             │                      │
- │ US Census Bureau    │────────────►│  • fetch movies API  │
- │ ACS API             │  HTTP GET   │  • fetch census API  │
- │ ZIP demographics    │  JSON       │  • merge into single │
- └─────────────────────┘             │    raw DataFrame     │
-                                     │                      │
-                                     └──────────┬───────────┘
-                                                │
-                                                │  raw DataFrame
-                                                │  (in memory)
-                                                ▼
-                                     ┌──────────────────────┐
-                                     │                      │
-                                     │    transform.py      │
-                                     │                      │
-                                     │  • extract coords    │
-                                     │  • fill missing ZIPs │
-                                     │  • reverse geocode   │
-                                     │  • clean columns     │
-                                     │  • rename + coerce   │
-                                     │  • drop blank rows   │
-                                     │  • derive Year col   │
-                                     │  • fill nulls        │
-                                     │                      │
-                                     └──────────┬───────────┘
-                                                │
-                                                │  clean DataFrame
-                                                │  (in memory)
-                                                ▼
-                                     ┌──────────────────────┐
-                                     │                      │
-                                     │      load.py         │
-                                     │                      │
-                                     │  • create ZipCodes   │
-                                     │  • create Parks      │
-                                     │  • create Events     │
-                                     │  • bulk insert all   │
-                                     │  • verify row counts │
-                                     │                      │
-                                     └──────────┬───────────┘
-                                                │
-                                                │  psycopg2
-                                                │  INSERT
-                                                ▼
-                                     ┌──────────────────────────────────────┐
-                                     │           [postgres]                 │
-                                     │                                      │
-                                     │  ZipCodes                            │
-                                     │  ├── zip_code  VARCHAR(10)  PK       │
-                                     │  └── income    INTEGER               │
-                                     │            │                         │
-                                     │            │ FK zip_code             │
-                                     │            ▼                         │
-                                     │  Parks                               │
-                                     │  ├── park_id   SERIAL       PK       │
-                                     │  ├── park_name VARCHAR(255)          │
-                                     │  ├── address   VARCHAR(255)          │
-                                     │  └── zip_code  VARCHAR(10)  FK       │
-                                     │            │                         │
-                                     │            │ FK park_id              │
-                                     │            ▼                         │
-                                     │  Events                              │
-                                     │  ├── event_id          SERIAL  PK    │
-                                     │  ├── movie_name        VARCHAR(255)  │
-                                     │  ├── park_id           INTEGER FK    │
-                                     │  ├── rating            VARCHAR(10)   │
-                                     │  ├── date              DATE          │
-                                     │  └── closed_captioning BOOLEAN       │
-                                     │                                      │
-                                     └──────────────────────────────────────┘
-                                                │
-                                                │  psycopg2
-                                                │  SELECT
-                                                ▼
-                                     ┌──────────────────────┐
-                                     │                      │
-                                     │     [streamlit]      │
-                                     │                      │
-                                     │  • query postgres    │
-                                     │  • render charts     │
-                                     │  • filter / explore  │
-                                     │                      │
-                                     └──────────┬───────────┘
-                                                │
-                                                │ HTTP :8501
-                                                ▼
-                                     ┌──────────────────────┐
-                                     │       BROWSER        │
-                                     │   localhost:8501     │
-                                     └──────────────────────┘
+ ┌──────────────────────┐
+ │  Chicago Open Data   │
+ │  SODA API            │
+ │                      │          ┌─────────────────────┐
+ │  2014 → 260 rows     │          │                     │
+ │  2015 → 237 rows     ├─────────►│     extract.py      │
+ │  2016 → 243 rows     │ HTTP GET │                     │
+ │  2017 → 237 rows     │ JSON     │  Per-year column    │
+ │  2018 → 221 rows     │          │  normalisation:     │
+ │  2019 → 210 rows     │          │  ┌───────────────┐  │
+ └──────────────────────┘          │  │ 2014-2016     │  │
+                                   │  │ location_1    │  │
+                                   │  │ → address     │  │
+                                   │  │ startdate     │  │
+                                   │  │ → date        │  │
+                                   │  │ movierating   │  │
+                                   │  │ → rating      │  │
+                                   │  ├───────────────┤  │
+                                   │  │ 2017-2019     │  │
+                                   │  │ title         │  │
+                                   │  │ → moviename   │  │
+                                   │  │ park_address  │  │
+                                   │  │ → address     │  │
+                                   │  │ cc            │  │
+                                   │  │ → caption     │  │
+                                   │  └───────────────┘  │
+                                   │                     │
+                                   │  UNION ALL →        │
+                                   │  movies_df          │
+                                   │  1,408 rows         │
+ ┌──────────────────────┐          │                     │
+ │  US Census Bureau    │          │  census_df          │
+ │  ACS 2019 5yr API    ├─────────►│  58 ZIP rows        │
+ │                      │ HTTP GET │                     │
+ │  60 Chicago ZIPs     │ JSON     │  Derives:           │
+ │  (58 successful)     │          │  • PredRace         │
+ │                      │          │  • PctMarried       │
+ └──────────────────────┘          │  • EduRate          │
+                                   │  • BirthRate        │
+                                   │  • MedianAge        │
+                                   │  • Population       │
+                                   │                     │
+                                   └──────────┬──────────┘
+                                              │
+                                              │  movies_df (raw)
+                                              │  census_df (raw)
+                                              │  in memory
+                                              ▼
+                                   ┌─────────────────────┐
+                                   │                     │
+                                   │    transform.py     │
+                                   │                     │
+                                   │  movies_df only ──► │
+                                   │                     │
+                                   │  • extract_coords   │
+                                   │    (JSON → lat/lng) │
+                                   │                     │
+                                   │  • fill_missing_    │
+                                   │    zips (geocoder)  │
+                                   │                     │
+                                   │  • clean_columns    │
+                                   │    CC: Yes/No → Y/N │
+                                   │    date imputation  │
+                                   │    zip cleanup      │
+                                   │                     │
+                                   │  • build_park_      │
+                                   │    address_map      │
+                                   │    (Nominatim fwd   │
+                                   │     + rev geocode)  │
+                                   │                     │
+                                   │  • drop blank       │
+                                   │    movie names      │
+                                   │                     │
+                                   │  • derive Year col  │
+                                   │    null 2016 dates  │
+                                   │                     │
+                                   │  Returns:           │
+                                   │  clean_movies_df    │
+                                   │  ~1,400 rows        │
+                                   │                     │
+                                   └──────────┬──────────┘
+                                              │
+                                              │  clean_movies_df (in memory)
+                                              │  census_df      (in memory)
+                                              ▼
+                                   ┌─────────────────────┐
+                                   │                     │
+                                   │      load.py        │
+                                   │                     │
+                                   │  FK-safe load order:│
+                                   │                     │
+                                   │  1. create_tables() │
+                                   │  2. ensure_unknown_ │
+                                   │     zip() → '00000' │
+                                   │  3. load_zipcodes() │
+                                   │  4. ensure_all_     │
+                                   │     movie_zips()    │
+                                   │  5. load_parks()    │
+                                   │  6. load_events()   │
+                                   │  7. verify_load()   │
+                                   │                     │
+                                   └──────────┬──────────┘
+                                              │
+                                              │ psycopg2 INSERT
+                                              ▼
+╔═════════════════════════════════════════════════════════════════════════════════════════════╗
+║  DATABASE SCHEMA                                                                             ║
+║                                                                                              ║
+║  ZipCodes                                                                                    ║
+║  ══════════════════════════════════════════════════════════════════════════════              ║
+║  zip_code         VARCHAR(10)   PRIMARY KEY                                                  ║
+║  income           INTEGER       avg median household income (Census B19013_001E)             ║
+║  predominant_race VARCHAR(20)   majority race per ZIP (derived from B02001_00xE)            ║
+║  pct_married      NUMERIC(5,2)  % currently married (derived from B12001_004E + 013E)       ║
+║  birth_rate       INTEGER       women with birth last 12 months (B13002_002E)               ║
+║  edu_rate         NUMERIC(5,2)  % bachelor's or higher (derived from B15003_022-025E)       ║
+║  median_age       NUMERIC(6,2)  median age (B01002_001E)                                    ║
+║  population       INTEGER       total ZIP population (B01003_001E)                          ║
+║            │                                                                                 ║
+║            │ FK zip_code                                                                     ║
+║            ▼                                                                                 ║
+║  Parks                                                                                       ║
+║  ══════════════════════════════════════════════════════════════════════════════              ║
+║  park_id          SERIAL        PRIMARY KEY                                                  ║
+║  park_name        VARCHAR(255)  NOT NULL                                                     ║
+║  address          VARCHAR(255)  geocoded via Nominatim                                       ║
+║  zip_code         VARCHAR(10)   FK → ZipCodes.zip_code                                      ║
+║            │                                                                                 ║
+║            │ FK park_id                                                                      ║
+║            ▼                                                                                 ║
+║  Events                                                                                      ║
+║  ══════════════════════════════════════════════════════════════════════════════              ║
+║  event_id          SERIAL        PRIMARY KEY                                                 ║
+║  movie_name        VARCHAR(255)  NOT NULL                                                    ║
+║  park_id           INTEGER       FK → Parks.park_id                                         ║
+║  rating            VARCHAR(10)   NOT NULL  (NR if unknown)                                  ║
+║  date              DATE          NULL for 2016 (date unavailable in source API)             ║
+║  closed_captioning BOOLEAN       Y/Yes → TRUE  |  N/No → FALSE                             ║
+╚═════════════════════════════════════════════════════════════════════════════════════════════╝
+                                              │
+                                              │ psycopg2 SELECT
+                                              ▼
+                                   ┌─────────────────────┐
+                                   │                     │
+                                   │    [streamlit]      │
+                                   │                     │
+                                   │  • query postgres   │
+                                   │  • render charts    │
+                                   │  • filter/explore   │
+                                   │                     │
+                                   └──────────┬──────────┘
+                                              │
+                                              │ HTTP :8501
+                                              ▼
+                                   ┌─────────────────────┐
+                                   │      BROWSER        │
+                                   │  localhost:8501     │
+                                   └─────────────────────┘
 
 
 ╔══════════════════════════════════════════════════════════════════════════════════════════════╗
 ║  STARTUP ORDER          docker-compose up --build                                            ║
 ║                                                                                              ║
 ║  [postgres] ──healthy──► [etl] ──completed──► [streamlit]                                   ║
-║   empty db               extract                dashboard                                   ║
-║                          transform              up at :8501                                 ║
+║   empty db               extract                dashboard up                                ║
+║                          transform              at :8501                                    ║
 ║                          load                                                               ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
 
 
 ╔══════════════════════════════════════════════════════════════════════════════════════════════╗
-║  IN-MEMORY DATA FLOW                                                                         ║
+║  IN-MEMORY DATA FLOW — no CSV written to disk, postgres written to exactly once              ║
 ║                                                                                              ║
-║  extract.py                 transform.py                load.py                             ║
-║  ══════════                 ════════════                ═══════                             ║
-║  fetch APIs                 receives raw_df             receives clean_df                   ║
-║       │                          │                           │                              ║
-║       │                          │  cleans in memory         │  writes to postgres          ║
-║       ▼                          ▼                           ▼                              ║
-║  raw_df        ────────►   clean_df         ────────►   ZipCodes                           ║
-║  (in memory)               (in memory)                  Parks                              ║
-║                                                          Events                             ║
-║                                                                                              ║
-║  No CSVs written to disk.                                                                    ║
-║  Postgres is written to exactly once — at the end of the pipeline.                           ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════╝
-
-
-╔══════════════════════════════════════════════════════════════════════════════════════════════╗
-║  NORMALISED SCHEMA — LOAD ORDER                                                              ║
-║                                                                                              ║
-║  1. ZipCodes   ← no foreign key dependencies, loaded first                                  ║
-║       │                                                                                      ║
-║  2. Parks      ← depends on ZipCodes (zip_code FK)                                          ║
-║       │                                                                                      ║
-║  3. Events     ← depends on Parks (park_id FK)                                              ║
+║  extract.py              transform.py              load.py                                  ║
+║  ══════════              ════════════              ═══════                                  ║
+║  movies_df  ────────►   clean_movies_df ────────► ZipCodes (census_df)                     ║
+║  census_df  ─────────────────────────────────────► Parks   (clean_movies_df)               ║
+║                                                    Events  (clean_movies_df)               ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -199,8 +212,8 @@ The steps of our pipeline are as follows
 | `[service]` | Docker container |
 | `FK` | Foreign key constraint |
 | `PK` | Primary key |
-| `in memory` | Data lives in a Python DataFrame — never written to disk |
-| `service_healthy` | Docker healthcheck gate — postgres must be ready before ETL connects |
+| `in memory` | Python DataFrame — never written to disk |
+| `service_healthy` | Postgres healthcheck gate before ETL connects |
 | `service_completed_successfully` | ETL must fully finish before streamlit starts |
 
 ## Quickstart
@@ -209,4 +222,4 @@ The steps of our pipeline are as follows
 docker-compose up --build
 ```
 
-Then open your browser at `http://localhost:8501`
+Open your browser at `http://localhost:8501`
